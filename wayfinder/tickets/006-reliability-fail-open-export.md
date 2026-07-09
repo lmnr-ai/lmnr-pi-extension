@@ -16,6 +16,12 @@ blockedBy: [2]
 > /`session_shutdown` orphan sweep for spans open at a mid-run crash), not whether to
 > export per-turn vs per-run — that's settled.
 
+> Prototype input (ticket 8): the working spike exports **per-span-close, fire-and-forget**
+> (`void exportWithTimeout`), with a collecting processor drained per flush — real run showed
+> 1 span/export. Also found: `before_agent_start`/`tool_execution_*` events carry **no
+> timestamp**, so root/TOOL spans currently use wall-clock; decide whether tool timing needs
+> another source. Confirm/adjust these against the fail-open requirements below.
+
 How does live in-process export behave so it never blocks a pi turn or breaks pi on a
 Laminar outage?
 
