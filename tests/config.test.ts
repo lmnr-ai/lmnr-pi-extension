@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { getLaminarConfig } from "../src/config.js";
+
+const KEYS = ["LMNR_PROJECT_API_KEY", "LMNR_BASE_URL", "LMNR_USER_ID"];
+function clear(): void {
+  for (const k of KEYS) {
+    delete process.env[k];
+  }
+}
+
+test("getLaminarConfig returns null without an API key (fail-open)", () => {
+  clear();
+  assert.equal(getLaminarConfig(), null);
+});
+
+test("getLaminarConfig defaults baseUrl and null userId", () => {
+  clear();
+  process.env.LMNR_PROJECT_API_KEY = "sk-test";
+  const cfg = getLaminarConfig();
+  assert.deepEqual(cfg, { apiKey: "sk-test", baseUrl: "https://api.lmnr.ai", userId: null });
+  clear();
+});
+
+test("getLaminarConfig strips trailing slashes and reads userId", () => {
+  clear();
+  process.env.LMNR_PROJECT_API_KEY = "sk-test";
+  process.env.LMNR_BASE_URL = "http://localhost:8000///";
+  process.env.LMNR_USER_ID = "user-9";
+  const cfg = getLaminarConfig();
+  assert.equal(cfg?.baseUrl, "http://localhost:8000");
+  assert.equal(cfg?.userId, "user-9");
+  clear();
+});
