@@ -3,10 +3,12 @@ import {
   SpanKind,
   SpanStatusCode,
   trace,
+  TraceFlags,
   type Attributes,
   type AttributeValue,
   type Context,
   type Span,
+  type SpanContext,
 } from "@opentelemetry/api";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -26,6 +28,46 @@ export const ASSOC_PREFIX = "lmnr.association.properties";
 // Metadata key the Laminar backend keys debugger (rollout) sessions on. Stamped
 // on every span of a debug run so the trace shows up in the debugger session.
 export const ROLLOUT_SESSION_META = `${ASSOC_PREFIX}.metadata.rollout.session_id`;
+
+/**
+ * Build an OTel remote-parent `Context` from a serialized Laminar span context
+ * (the `LMNR_SPAN_CONTEXT` env var Harbor injects to link the agent's trace to
+ * its EXECUTOR span). Returns null when absent/unparseable — the run then roots
+ * its own trace as before (fail-open).
+ *
+ * Format mirrors the Laminar SDK (`LaminarSpanContext.model_dump_json`): JSON
+ * with `trace_id`/`span_id` as UUID strings, where the SDK packs the OTel ids
+ * via `uuid.UUID(int=<otel_id>)`. So trace_id's 32 hex ARE the OTel 128-bit
+ * trace id, and span_id's LOW 64 bits (last 16 hex) are the OTel 8-byte span id.
+ */
+export function remoteParentContextFromEnv(raw: string | undefined | null): Context | null {
+  if (!raw || !raw.trim()) {
+    return null;
+  }
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    const traceRaw = (obj.trace_id ?? obj.traceId) as string | undefined;
+    const spanRaw = (obj.span_id ?? obj.spanId) as string | undefined;
+    if (typeof traceRaw !== "string" || typeof spanRaw !== "string") {
+      return null;
+    }
+    const traceId = traceRaw.replace(/-/g, "").toLowerCase();
+    // span_id is a UUID whose low 64 bits carry the OTel 8-byte span id.
+    const spanId = spanRaw.replace(/-/g, "").toLowerCase().slice(-16);
+    if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) {
+      return null;
+    }
+    const spanContext: SpanContext = {
+      traceId,
+      spanId,
+      traceFlags: TraceFlags.SAMPLED,
+      isRemote: true,
+    };
+    return trace.setSpanContext(ROOT_CONTEXT, spanContext);
+  } catch {
+    return null;
+  }
+}
 
 /** Convert loosely-typed attributes to OTel attributes, dropping unsupported values. */
 function toOtelAttributes(attrs: Record<string, Json>): Attributes {
@@ -71,10 +113,19 @@ export class TraceEmitter {
   // Attributes stamped on every span this emitter mints (e.g. the debugger
   // rollout-session association). Empty on the common, non-debug path.
   private readonly defaultAttributes: Record<string, Json>;
+  // Context that root spans (parent === null) attach to. ROOT_CONTEXT for a
+  // standalone trace; an injected remote parent (LMNR_SPAN_CONTEXT) when this
+  // run should nest under an upstream span (e.g. Harbor's EXECUTOR).
+  private readonly rootParent: Context;
 
-  constructor(config: LaminarConfig, defaultAttributes: Record<string, Json> = {}) {
+  constructor(
+    config: LaminarConfig,
+    defaultAttributes: Record<string, Json> = {},
+    rootParent: Context | null = null
+  ) {
     this.config = config;
     this.defaultAttributes = defaultAttributes;
+    this.rootParent = rootParent ?? ROOT_CONTEXT;
     this.processor = new CollectingSpanProcessor();
     const provider = new BasicTracerProvider({
       resource: new Resource({
@@ -97,7 +148,7 @@ export class TraceEmitter {
   }
 
   startSpan(name: string, startTime: Date, attributes: Record<string, Json>, parent: SpanHandle | null): SpanHandle {
-    const parentCtx = parent ? parent.context : ROOT_CONTEXT;
+    const parentCtx = parent ? parent.context : this.rootParent;
     const merged = { ...this.defaultAttributes, ...attributes };
     const span = this.tracer.startSpan(
       name,

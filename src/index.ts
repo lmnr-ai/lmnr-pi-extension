@@ -4,6 +4,7 @@ import { debug, info } from "./logger.js";
 import {
   exportWithTimeout,
   registerRolloutSession,
+  remoteParentContextFromEnv,
   ROLLOUT_SESSION_META,
   SPAN_OUTPUT_ATTR,
   SpanHandle,
@@ -84,7 +85,14 @@ export default function laminar(pi: PiApi): void {
       const defaultAttributes: Record<string, Json> = rolloutSessionId
         ? { [ROLLOUT_SESSION_META]: rolloutSessionId }
         : {};
-      const emitter = new TraceEmitter(config, defaultAttributes);
+      // When Harbor (or any upstream) injects LMNR_SPAN_CONTEXT, nest this
+      // run's trace under that parent span instead of rooting a new trace, so
+      // pi's LLM/tool spans appear under the caller's EXECUTOR span.
+      const rootParent = remoteParentContextFromEnv(process.env.LMNR_SPAN_CONTEXT);
+      const emitter = new TraceEmitter(config, defaultAttributes, rootParent);
+      if (rootParent) {
+        debug("nesting trace under injected LMNR_SPAN_CONTEXT parent");
+      }
       if (rolloutSessionId) {
         void registerRolloutSession(config, rolloutSessionId).catch((e) =>
           info(`rollout register (swallowed): ${e}`)
