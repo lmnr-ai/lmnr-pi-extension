@@ -169,6 +169,14 @@ test("end-to-end: pi event stream produces the expected Laminar span tree", asyn
   assert.equal(llm0.attrs["llm.usage.total_tokens"], 8300);
   assert.equal(llm0.attrs["pi.usage.cost_usd"], 0.0535);
   assert.equal(llm0.parentSpanId, root!.spanId, "LLM span nests under root");
+  assert.match(String(llm0.attrs["gen_ai.input.messages"]), /list the files/, "turn 0 input is the user prompt");
+
+  // Regression: every turn — not just turn 0 — reports its input. Turn 1's
+  // input must include the prior assistant turn and the tool result it saw.
+  const llm1 = llms.find((s) => s.attrs["pi.turn.index"] === 1)!;
+  assert.ok(llm1.attrs["gen_ai.input.messages"], "turn 1 LLM span carries input messages");
+  assert.match(String(llm1.attrs["gen_ai.input.messages"]), /list the files/, "turn 1 input keeps the original prompt");
+  assert.match(String(llm1.attrs["gen_ai.input.messages"]), /a\.txt/, "turn 1 input includes the prior tool result");
 
   assert.equal(tools.length, 1, "one TOOL span");
   assert.equal(tools[0].name, "bash");

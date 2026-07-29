@@ -1,4 +1,4 @@
-import { buildLlmAttributes, buildRootAssociation } from "./attributes.js";
+import { buildLlmAttributes, buildOutputMessage, buildRootAssociation } from "./attributes.js";
 import { getLaminarConfig } from "./config.js";
 import { debug, info } from "./logger.js";
 import {
@@ -34,7 +34,11 @@ interface RunState {
   llm: SpanHandle | null; // current turn's open LLM span
   tools: Map<string, SpanHandle>; // toolCallId -> open TOOL span
   turnIndex: number;
-  promptMessages: Json[]; // [{role:user, content}] — input for turn 0's LLM span
+  // Running conversation transcript, grown across turns (user prompt →
+  // assistant messages → tool results). Snapshotted at each message_start as
+  // that turn's LLM input, so every turn — not just turn 0 — reports its input.
+  messages: Json[];
+  pendingInput: Json[] | null; // input snapshot for the currently-open LLM span
   finalAssistantText: string;
 }
 
@@ -87,7 +91,8 @@ export default function laminar(pi: PiApi): void {
         llm: null,
         tools: new Map(),
         turnIndex: 0,
-        promptMessages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: prompt }],
+        pendingInput: null,
         finalAssistantText: "",
       };
       debug(`run started (session ${sessionId})`);
@@ -108,6 +113,9 @@ export default function laminar(pi: PiApi): void {
       if (!run || !isAssistant(event.message)) {
         return;
       }
+      // Snapshot the transcript-so-far as this turn's input BEFORE the
+      // assistant message is appended — this is what was sent to the model.
+      run.pendingInput = [...run.messages];
       run.llm = startSpan(run.emitter, {
         name: `LLM call (turn ${run.turnIndex})`,
         parent: run.root,
@@ -125,11 +133,14 @@ export default function laminar(pi: PiApi): void {
         return;
       }
       const message = event.message;
-      const inputMessages = run.turnIndex === 0 ? run.promptMessages : null;
       run.llm.setAttributes({
-        ...buildLlmAttributes(message, inputMessages),
+        ...buildLlmAttributes(message, run.pendingInput),
         "pi.turn.index": run.turnIndex,
       });
+      // Append this assistant message (incl. tool_calls) to the transcript so
+      // the next turn's input snapshot includes it.
+      run.messages.push(buildOutputMessage(message));
+      run.pendingInput = null;
       run.finalAssistantText = extractText(message.content) || run.finalAssistantText;
       run.llm.end(now(message));
       run.llm = null;
@@ -177,6 +188,13 @@ export default function laminar(pi: PiApi): void {
         if (event.isError) {
           span.setError("tool reported isError");
         }
+        // Feed the tool result back into the transcript so the next turn's LLM
+        // input reflects what the model actually saw.
+        run.messages.push({
+          role: "tool",
+          tool_call_id: event.toolCallId,
+          content: event.result ?? null,
+        });
         span.end(new Date());
         run.tools.delete(event.toolCallId);
         flush(run.emitter);
