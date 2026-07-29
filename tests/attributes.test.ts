@@ -47,7 +47,7 @@ test("buildOutputMessage renders text + toolCall blocks", () => {
   });
 });
 
-test("buildLlmAttributes: cost is custom-keyed, never a gen_ai cost key", () => {
+test("buildLlmAttributes: cost uses the SDK's canonical gen_ai.usage.cost keys", () => {
   const msg: PiAssistantMessage = {
     role: "assistant",
     content: [{ type: "text", text: "hi" }],
@@ -55,16 +55,34 @@ test("buildLlmAttributes: cost is custom-keyed, never a gen_ai cost key", () => 
     model: "us.anthropic.claude-opus-4-8",
     api: "bedrock-converse-stream",
     stopReason: "toolUse",
-    usage: { input: 2, output: 89, cacheWrite: 8209, totalTokens: 8300, cost: { total: 0.0535 } },
+    usage: {
+      input: 2,
+      output: 89,
+      cacheWrite: 8209,
+      totalTokens: 8300,
+      cost: { input: 0.05, output: 0.0035, total: 0.0535 },
+    },
   };
   const attrs = buildLlmAttributes(msg, null);
   assert.equal(attrs["gen_ai.system"], "anthropic");
   assert.equal(attrs["gen_ai.provider.name"], "amazon-bedrock");
   assert.equal(attrs["gen_ai.request.model"], "us.anthropic.claude-opus-4-8");
   assert.deepEqual(attrs["gen_ai.response.finish_reasons"], ["toolUse"]);
-  assert.equal(attrs["pi.usage.cost_usd"], 0.0535);
   assert.equal(attrs["gen_ai.usage.input_tokens"], 2);
-  // No gen_ai.* cost key that Laminar would double-count.
+  // pi's authoritative cost is emitted under the canonical SDK keys.
+  assert.equal(attrs["gen_ai.usage.cost"], 0.0535);
+  assert.equal(attrs["gen_ai.usage.input_cost"], 0.05);
+  assert.equal(attrs["gen_ai.usage.output_cost"], 0.0035);
+});
+
+test("buildLlmAttributes: cost keys omitted when pi reports no cost", () => {
+  const msg: PiAssistantMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "hi" }],
+    model: "us.anthropic.claude-opus-4-8",
+    usage: { input: 2, output: 89, totalTokens: 91 },
+  };
+  const attrs = buildLlmAttributes(msg, null);
   assert.ok(!Object.keys(attrs).some((k) => k.startsWith("gen_ai.usage.cost")));
 });
 

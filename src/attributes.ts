@@ -48,6 +48,33 @@ export function mapUsageTokens(usage: PiUsage | undefined): Record<string, numbe
   return out;
 }
 
+/**
+ * Map pi's precomputed `usage.cost` to the SDK's canonical cost attributes
+ * (`gen_ai.usage.cost` / `input_cost` / `output_cost`, per lmnr-ts
+ * `LaminarAttributes`). pi hands us the authoritative cost, so we emit it
+ * directly rather than relying on Laminar deriving cost from tokens — the
+ * derivation only works for models Laminar has pricing for, whereas pi's
+ * number is correct for every provider/model.
+ */
+export function mapUsageCost(usage: PiUsage | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  const cost = usage?.cost;
+  if (!cost) {
+    return out;
+  }
+  const pairs: [string, number | undefined][] = [
+    ["gen_ai.usage.cost", cost.total],
+    ["gen_ai.usage.input_cost", cost.input],
+    ["gen_ai.usage.output_cost", cost.output],
+  ];
+  for (const [key, value] of pairs) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 /** Represent a pi assistant message's content as a single gen_ai output message. */
 export function buildOutputMessage(message: PiAssistantMessage): Json {
   const text = extractText(message.content);
@@ -88,13 +115,7 @@ export function buildLlmAttributes(message: PiAssistantMessage, inputMessages: J
   attrs["gen_ai.output.messages"] = jsonDumpsTruncated([buildOutputMessage(message)]);
 
   Object.assign(attrs, mapUsageTokens(message.usage));
-
-  // Cost: keep tokens driving Laminar's own derivation; expose pi's precomputed
-  // total under a CUSTOM key so it is preserved without double-counting.
-  const cost = message.usage?.cost?.total;
-  if (typeof cost === "number" && Number.isFinite(cost)) {
-    attrs["pi.usage.cost_usd"] = cost;
-  }
+  Object.assign(attrs, mapUsageCost(message.usage));
   return attrs;
 }
 

@@ -167,7 +167,7 @@ test("end-to-end: pi event stream produces the expected Laminar span tree", asyn
   assert.equal(llm0.attrs["gen_ai.provider.name"], "amazon-bedrock");
   assert.equal(llm0.attrs["gen_ai.usage.input_tokens"], 2);
   assert.equal(llm0.attrs["llm.usage.total_tokens"], 8300);
-  assert.equal(llm0.attrs["pi.usage.cost_usd"], 0.0535);
+  assert.equal(llm0.attrs["gen_ai.usage.cost"], 0.0535);
   assert.equal(llm0.parentSpanId, root!.spanId, "LLM span nests under root");
   assert.match(String(llm0.attrs["gen_ai.input.messages"]), /list the files/, "turn 0 input is the user prompt");
 
