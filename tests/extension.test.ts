@@ -184,3 +184,42 @@ test("end-to-end: pi event stream produces the expected Laminar span tree", asyn
   assert.match(String(tools[0].attrs["lmnr.span.output"]), /a\.txt/);
   assert.equal(tools[0].parentSpanId, root!.spanId, "TOOL span nests under root");
 });
+
+test("debugger mode stamps rollout.session_id on every span", async () => {
+  const spans: CapturedSpan[] = [];
+  const sink = await startCaptureServer(spans);
+  process.env.LMNR_PROJECT_API_KEY = "sk-test";
+  process.env.LMNR_BASE_URL = sink.url;
+  process.env.LMNR_DEBUG = "true";
+  process.env.LMNR_DEBUG_SESSION_ID = "rollout-xyz";
+
+  const { default: laminar } = await import("../src/index.js");
+  const { pi, emit } = makeFakePi();
+  laminar(pi);
+
+  await emit("before_agent_start", { prompt: "hi" });
+  await emit("message_start", asstStart);
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      provider: "amazon-bedrock",
+      model: "us.anthropic.claude-opus-4-8",
+      stopReason: "endTurn",
+      usage: { input: 1, output: 1, totalTokens: 2 },
+    },
+  });
+  await emit("agent_end", {});
+
+  await waitForSpans(spans, 2);
+  await sink.close();
+
+  const key = "lmnr.association.properties.metadata.rollout.session_id";
+  assert.ok(spans.length >= 2, `expected spans, got ${spans.length}`);
+  for (const s of spans) {
+    assert.equal(s.attrs[key], "rollout-xyz", `${s.name} carries the rollout session id`);
+  }
+
+  delete process.env.LMNR_DEBUG;
+  delete process.env.LMNR_DEBUG_SESSION_ID;
+});

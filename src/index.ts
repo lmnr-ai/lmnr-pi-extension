@@ -1,8 +1,10 @@
 import { buildLlmAttributes, buildOutputMessage, buildRootAssociation } from "./attributes.js";
-import { getLaminarConfig } from "./config.js";
+import { getLaminarConfig, getRolloutSessionId } from "./config.js";
 import { debug, info } from "./logger.js";
 import {
   exportWithTimeout,
+  registerRolloutSession,
+  ROLLOUT_SESSION_META,
   SPAN_OUTPUT_ATTR,
   SpanHandle,
   startSpan,
@@ -73,9 +75,22 @@ export default function laminar(pi: PiApi): void {
         run = null;
         return;
       }
-      const emitter = new TraceEmitter(config);
       const sessionId = ctx.sessionManager.getSessionId();
       const cwd = ctx.cwd ?? ctx.sessionManager.getCwd?.();
+      // Debugger (rollout) session: when LMNR_DEBUG is on, associate this trace
+      // with the debugger session so it appears there. Register it (idempotent)
+      // and stamp its id on every span this run emits.
+      const rolloutSessionId = getRolloutSessionId(cwd ?? process.cwd());
+      const defaultAttributes: Record<string, Json> = rolloutSessionId
+        ? { [ROLLOUT_SESSION_META]: rolloutSessionId }
+        : {};
+      const emitter = new TraceEmitter(config, defaultAttributes);
+      if (rolloutSessionId) {
+        void registerRolloutSession(config, rolloutSessionId).catch((e) =>
+          info(`rollout register (swallowed): ${e}`)
+        );
+        debug(`debugger session ${rolloutSessionId}`);
+      }
       const prompt = event.prompt ?? "";
       const root = startSpan(emitter, {
         name: "pi agent run",

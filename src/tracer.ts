@@ -23,6 +23,9 @@ export const SPAN_INPUT_ATTR = "lmnr.span.input";
 export const SPAN_OUTPUT_ATTR = "lmnr.span.output";
 export const SPAN_PATH_ATTR = "lmnr.span.path";
 export const ASSOC_PREFIX = "lmnr.association.properties";
+// Metadata key the Laminar backend keys debugger (rollout) sessions on. Stamped
+// on every span of a debug run so the trace shows up in the debugger session.
+export const ROLLOUT_SESSION_META = `${ASSOC_PREFIX}.metadata.rollout.session_id`;
 
 /** Convert loosely-typed attributes to OTel attributes, dropping unsupported values. */
 function toOtelAttributes(attrs: Record<string, Json>): Attributes {
@@ -65,9 +68,13 @@ export class TraceEmitter {
   readonly config: LaminarConfig;
   private readonly processor: CollectingSpanProcessor;
   private readonly tracer;
+  // Attributes stamped on every span this emitter mints (e.g. the debugger
+  // rollout-session association). Empty on the common, non-debug path.
+  private readonly defaultAttributes: Record<string, Json>;
 
-  constructor(config: LaminarConfig) {
+  constructor(config: LaminarConfig, defaultAttributes: Record<string, Json> = {}) {
     this.config = config;
+    this.defaultAttributes = defaultAttributes;
     this.processor = new CollectingSpanProcessor();
     const provider = new BasicTracerProvider({
       resource: new Resource({
@@ -91,9 +98,10 @@ export class TraceEmitter {
 
   startSpan(name: string, startTime: Date, attributes: Record<string, Json>, parent: SpanHandle | null): SpanHandle {
     const parentCtx = parent ? parent.context : ROOT_CONTEXT;
+    const merged = { ...this.defaultAttributes, ...attributes };
     const span = this.tracer.startSpan(
       name,
-      { kind: SpanKind.INTERNAL, startTime, attributes: toOtelAttributes(attributes) },
+      { kind: SpanKind.INTERNAL, startTime, attributes: toOtelAttributes(merged) },
       parentCtx
     );
     span.setStatus({ code: SpanStatusCode.OK });
@@ -168,6 +176,35 @@ export function startSpan(emitter: TraceEmitter, args: StartSpanArgs): SpanHandl
     Object.assign(attrs, args.attributes);
   }
   return emitter.startSpan(args.name, args.startTime ?? new Date(), attrs, args.parent);
+}
+
+/**
+ * Idempotently register (upsert) a debugger rollout session with the backend so
+ * it exists in the UI and collects traces stamped with its id. Mirrors the SDK's
+ * `POST /v1/rollouts/{sessionId}`. Fail-open: never throws.
+ */
+export async function registerRolloutSession(config: LaminarConfig, sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${config.baseUrl}/v1/rollouts/${sessionId}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(Math.round(EXPORT_TIMEOUT_S * 1000)),
+    });
+    if (!res.ok) {
+      info(`rollout session register failed: HTTP ${res.status}`);
+      return false;
+    }
+    debug(`registered debugger rollout session ${sessionId}`);
+    return true;
+  } catch (e) {
+    info(`rollout session register error (swallowed): ${e}`);
+    return false;
+  }
 }
 
 /** Export the given finished spans in one OTLP/HTTP/JSON request; true on 2xx. */

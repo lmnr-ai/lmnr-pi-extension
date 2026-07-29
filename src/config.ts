@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -11,7 +13,50 @@ function env(name: string): string {
   return (process.env[name] ?? "").trim();
 }
 
+// LMNR_DEBUG truthy set — matches the Laminar SDK (true/1/yes/on), broader than
+// our historical "true"-only DEBUG (kept for the log-file gate below).
+const DEBUG_TRUTHY = new Set(["true", "1", "yes", "on"]);
+export function isDebugEnabled(): boolean {
+  return DEBUG_TRUTHY.has(env("LMNR_DEBUG").toLowerCase());
+}
 export const DEBUG = env("LMNR_DEBUG").toLowerCase() === "true";
+
+/** Read the `session_id` from the nearest `.lmnr/debug-session.json`, walking up from `cwd`. */
+function readDebugSessionFile(cwd: string): string | null {
+  let dir = path.resolve(cwd);
+  for (let i = 0; i < 40; i++) {
+    try {
+      const raw = fs.readFileSync(path.join(dir, ".lmnr", "debug-session.json"), "utf8");
+      const sid = JSON.parse(raw)?.session_id;
+      if (typeof sid === "string" && sid) {
+        return sid;
+      }
+    } catch {
+      // no file here — keep walking up
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Resolve the Laminar debugger (rollout) session id when LMNR_DEBUG is set.
+ *
+ * Mirrors the SDK's precedence: `LMNR_DEBUG_SESSION_ID` env → nearest
+ * `.lmnr/debug-session.json` (written by `lmnr-cli debug session new`) → a
+ * freshly-minted UUID. Returns null when debug mode is off — the extension then
+ * emits no rollout association and behaves exactly as before.
+ */
+export function getRolloutSessionId(cwd: string): string | null {
+  if (!isDebugEnabled()) {
+    return null;
+  }
+  return env("LMNR_DEBUG_SESSION_ID") || readDebugSessionFile(cwd) || randomUUID();
+}
 
 const DEFAULT_MAX_CHARS = 20000;
 

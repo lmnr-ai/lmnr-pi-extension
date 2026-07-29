@@ -32,8 +32,25 @@ The OTLP emitter (`src/tracer.ts`) is reused from the Claude Code plugin. See
 export LMNR_PROJECT_API_KEY="..."          # required; absent ⇒ tracing disabled (fail-open)
 export LMNR_BASE_URL="https://api.lmnr.ai" # optional (default)
 export LMNR_USER_ID="..."                  # optional
-export LMNR_DEBUG="true"                    # optional; logs to ~/.pi/agent/lmnr-pi-extension.log
+export LMNR_DEBUG="true"                    # optional; enables debugger sessions + logs to ~/.pi/agent/lmnr-pi-extension.log
+export LMNR_DEBUG_SESSION_ID="..."         # optional; explicit debugger (rollout) session id
 export LMNR_MAX_CHARS="20000"              # optional; input/output truncation cap
+```
+
+## Debugger sessions (`lmnr-cli debug`)
+
+With `LMNR_DEBUG` truthy, each run is associated with a Laminar **debugger
+session** so the trace shows up in the debugger UI. The session id is resolved
+like the Laminar SDK: `LMNR_DEBUG_SESSION_ID` → the nearest
+`.lmnr/debug-session.json` (written by `lmnr-cli debug session new`) → a freshly
+minted UUID. The extension registers the session with the backend and stamps
+`lmnr.association.properties.metadata.rollout.session_id` on every span.
+
+```sh
+lmnr-cli debug session new           # mint a session + write .lmnr/debug-session.json
+LMNR_DEBUG=true pi -e /path/to/lmnr-pi-extension/src/index.ts -p "…"
+lmnr-cli debug session summary       # lists your run as a <trace .../> block
+lmnr-cli debug session open          # open the session in the browser
 ```
 
 ## Install (no build step — pi runs the `.ts` directly via jiti)
