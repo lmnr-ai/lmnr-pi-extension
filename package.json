@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "description": "Laminar observability extension for the pi coding agent — live in-process OTLP tracing",
   "type": "module",
-  "private": true,
   "license": "Apache-2.0",
+  "keywords": ["pi-package", "pi", "laminar", "observability", "tracing", "otel", "otlp"],
+  "files": ["src", "README.md"],
   "engines": {
     "node": ">=18"
   },
