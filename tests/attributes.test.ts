@@ -3,7 +3,6 @@ import { test } from "node:test";
 import {
   buildLlmAttributes,
   buildOutputMessage,
-  buildRootAssociation,
   inferVendor,
   mapUsageTokens,
 } from "../src/attributes.js";
@@ -84,14 +83,4 @@ test("buildLlmAttributes: cost keys omitted when pi reports no cost", () => {
   };
   const attrs = buildLlmAttributes(msg, null);
   assert.ok(!Object.keys(attrs).some((k) => k.startsWith("gen_ai.usage.cost")));
-});
-
-test("buildRootAssociation sets session_id, source, and optional user_id", () => {
-  assert.deepEqual(buildRootAssociation("sess-1", null), {
-    "lmnr.association.properties.session_id": "sess-1",
-    "lmnr.association.properties.metadata.source": "pi",
-  });
-  const withUser = buildRootAssociation("sess-1", "user-9", "/work");
-  assert.equal(withUser["lmnr.association.properties.user_id"], "user-9");
-  assert.equal(withUser["lmnr.association.properties.metadata.cwd"], "/work");
 });

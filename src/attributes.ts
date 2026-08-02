@@ -1,4 +1,4 @@
-import { ASSOC_PREFIX } from "./tracer.js";
+import { LaminarAttributes } from "@lmnr-ai/lmnr";
 import type { Json, PiAssistantMessage, PiUsage } from "./types.js";
 import { extractText, jsonDumpsTruncated } from "./util.js";
 
@@ -32,8 +32,9 @@ export function mapUsageTokens(usage: PiUsage | undefined): Record<string, numbe
     return out;
   }
   const pairs: [string, number | undefined][] = [
-    ["gen_ai.usage.input_tokens", usage.input],
-    ["gen_ai.usage.output_tokens", usage.output],
+    [LaminarAttributes.INPUT_TOKEN_COUNT, usage.input],
+    [LaminarAttributes.OUTPUT_TOKEN_COUNT, usage.output],
+    // No LaminarAttributes constant for the cache token keys — use the wire keys.
     ["gen_ai.usage.cache_read_input_tokens", usage.cacheRead],
     ["gen_ai.usage.cache_creation_input_tokens", usage.cacheWrite],
   ];
@@ -43,7 +44,7 @@ export function mapUsageTokens(usage: PiUsage | undefined): Record<string, numbe
     }
   }
   if (typeof usage.totalTokens === "number" && usage.totalTokens > 0) {
-    out["llm.usage.total_tokens"] = usage.totalTokens;
+    out[LaminarAttributes.TOTAL_TOKEN_COUNT] = usage.totalTokens;
   }
   return out;
 }
@@ -63,9 +64,9 @@ export function mapUsageCost(usage: PiUsage | undefined): Record<string, number>
     return out;
   }
   const pairs: [string, number | undefined][] = [
-    ["gen_ai.usage.cost", cost.total],
-    ["gen_ai.usage.input_cost", cost.input],
-    ["gen_ai.usage.output_cost", cost.output],
+    [LaminarAttributes.TOTAL_COST, cost.total],
+    [LaminarAttributes.INPUT_COST, cost.input],
+    [LaminarAttributes.OUTPUT_COST, cost.output],
   ];
   for (const [key, value] of pairs) {
     if (typeof value === "number" && Number.isFinite(value)) {
@@ -116,20 +117,5 @@ export function buildLlmAttributes(message: PiAssistantMessage, inputMessages: J
 
   Object.assign(attrs, mapUsageTokens(message.usage));
   Object.assign(attrs, mapUsageCost(message.usage));
-  return attrs;
-}
-
-/** Association-property attributes for the run root span. */
-export function buildRootAssociation(sessionId: string, userId: string | null, cwd?: string): Record<string, Json> {
-  const attrs: Record<string, Json> = {
-    [`${ASSOC_PREFIX}.session_id`]: sessionId,
-    [`${ASSOC_PREFIX}.metadata.source`]: "pi",
-  };
-  if (userId) {
-    attrs[`${ASSOC_PREFIX}.user_id`] = userId;
-  }
-  if (cwd) {
-    attrs[`${ASSOC_PREFIX}.metadata.cwd`] = cwd;
-  }
   return attrs;
 }

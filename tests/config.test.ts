@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getLaminarConfig, getRolloutSessionId } from "../src/config.js";
+import { getLaminarConfig } from "../src/config.js";
 
 const KEYS = ["LMNR_PROJECT_API_KEY", "LMNR_BASE_URL", "LMNR_USER_ID", "LMNR_DEBUG", "LMNR_DEBUG_SESSION_ID"];
 function clear(): void {
@@ -30,18 +30,5 @@ test("getLaminarConfig strips trailing slashes and reads userId", () => {
   const cfg = getLaminarConfig();
   assert.equal(cfg?.baseUrl, "http://localhost:8000");
   assert.equal(cfg?.userId, "user-9");
-  clear();
-});
-
-test("getRolloutSessionId is null when LMNR_DEBUG is off", () => {
-  clear();
-  assert.equal(getRolloutSessionId("/tmp"), null);
-});
-
-test("getRolloutSessionId prefers LMNR_DEBUG_SESSION_ID when debug is on", () => {
-  clear();
-  process.env.LMNR_DEBUG = "1"; // truthy set includes 1/true/yes/on
-  process.env.LMNR_DEBUG_SESSION_ID = "rollout-abc";
-  assert.equal(getRolloutSessionId("/tmp"), "rollout-abc");
   clear();
 });

@@ -1,18 +1,9 @@
-import { buildLlmAttributes, buildOutputMessage, buildRootAssociation } from "./attributes.js";
-import { getLaminarConfig, getRolloutSessionId } from "./config.js";
+import { buildLlmAttributes, buildOutputMessage } from "./attributes.js";
+import { getLaminarConfig } from "./config.js";
 import { debug, info } from "./logger.js";
-import {
-  exportWithTimeout,
-  registerRolloutSession,
-  remoteParentContextFromEnv,
-  ROLLOUT_SESSION_META,
-  SPAN_OUTPUT_ATTR,
-  SpanHandle,
-  startSpan,
-  TraceEmitter,
-} from "./tracer.js";
+import { flush, initTracing, SpanHandle, startSpan } from "./tracer.js";
 import type { Json, PiAssistantMessage } from "./types.js";
-import { extractText, jsonDumpsTruncated, parseTimestamp } from "./util.js";
+import { extractText, parseTimestamp } from "./util.js";
 
 // ----------------- Minimal structural pi types -----------------
 // The extension is loaded BY pi, which supplies these objects. We type them
@@ -30,9 +21,8 @@ interface AgentMessage extends Omit<PiAssistantMessage, "role"> {
   role: string;
 }
 
-// ----------------- Per-run state (ticket 2: bounded, dies with the run) -----------------
+// ----------------- Per-run state (bounded, dies with the run) -----------------
 interface RunState {
-  emitter: TraceEmitter;
   root: SpanHandle;
   llm: SpanHandle | null; // current turn's open LLM span
   tools: Map<string, SpanHandle>; // toolCallId -> open TOOL span
@@ -48,10 +38,11 @@ interface RunState {
 /**
  * Laminar observability extension for pi.
  *
- * One Laminar trace per agent run (ticket 2); spans opened on start events and
- * closed on end events (fully granular, realtime); exported live over
- * OTLP/HTTP/JSON reusing the CC emitter. Fail-open throughout — a Laminar
- * problem must never break a pi turn.
+ * One Laminar trace per agent run; spans opened on start events and closed on
+ * end events (fully granular, realtime). Tracing, OTLP export, LMNR_SPAN_CONTEXT
+ * nesting, and the LMNR_DEBUG debugger/rollout session are all delegated to the
+ * `@lmnr-ai/lmnr` SDK. Fail-open throughout — a Laminar problem must never break
+ * a pi turn.
  */
 export default function laminar(pi: PiApi): void {
   // At most one agent run is active per session at a time; tools within a run
@@ -59,11 +50,6 @@ export default function laminar(pi: PiApi): void {
   let run: RunState | null = null;
 
   const now = (msg?: PiAssistantMessage): Date => parseTimestamp(msg?.timestamp) ?? new Date();
-
-  /** Fire-and-forget realtime export of finished spans. Never blocks pi, never throws. */
-  const flush = (emitter: TraceEmitter): void => {
-    void exportWithTimeout(emitter).catch((e) => info(`flush error (swallowed): ${e}`));
-  };
 
   const isAssistant = (m: AgentMessage | undefined): m is PiAssistantMessage =>
     !!m && m.role === "assistant";
@@ -76,40 +62,25 @@ export default function laminar(pi: PiApi): void {
         run = null;
         return;
       }
+      // Idempotent: initializes the SDK once for the process. The SDK reads
+      // LMNR_SPAN_CONTEXT (upstream parent + trace_type) and LMNR_DEBUG (debugger
+      // rollout session) from the environment on its own — the extension no
+      // longer resolves, registers, or stamps any of that itself.
+      initTracing(config);
       const sessionId = ctx.sessionManager.getSessionId();
       const cwd = ctx.cwd ?? ctx.sessionManager.getCwd?.();
-      // Debugger (rollout) session: when LMNR_DEBUG is on, associate this trace
-      // with the debugger session so it appears there. Register it (idempotent)
-      // and stamp its id on every span this run emits.
-      const rolloutSessionId = getRolloutSessionId(cwd ?? process.cwd());
-      const defaultAttributes: Record<string, Json> = rolloutSessionId
-        ? { [ROLLOUT_SESSION_META]: rolloutSessionId }
-        : {};
-      // When Harbor (or any upstream) injects LMNR_SPAN_CONTEXT, nest this
-      // run's trace under that parent span instead of rooting a new trace, so
-      // pi's LLM/tool spans appear under the caller's EXECUTOR span.
-      const rootParent = remoteParentContextFromEnv(process.env.LMNR_SPAN_CONTEXT);
-      const emitter = new TraceEmitter(config, defaultAttributes, rootParent);
-      if (rootParent) {
-        debug("nesting trace under injected LMNR_SPAN_CONTEXT parent");
-      }
-      if (rolloutSessionId) {
-        void registerRolloutSession(config, rolloutSessionId).catch((e) =>
-          info(`rollout register (swallowed): ${e}`)
-        );
-        debug(`debugger session ${rolloutSessionId}`);
-      }
       const prompt = event.prompt ?? "";
-      const root = startSpan(emitter, {
+      const root = startSpan({
         name: "pi agent run",
         parent: null,
         startTime: new Date(),
         spanType: "DEFAULT",
         inputValue: { role: "user", content: prompt },
-        attributes: buildRootAssociation(sessionId, config.userId, cwd),
+        sessionId,
+        ...(config.userId ? { userId: config.userId } : {}),
+        metadata: { source: "pi", ...(cwd ? { cwd } : {}) },
       });
       run = {
-        emitter,
         root,
         llm: null,
         tools: new Map(),
@@ -139,7 +110,7 @@ export default function laminar(pi: PiApi): void {
       // Snapshot the transcript-so-far as this turn's input BEFORE the
       // assistant message is appended — this is what was sent to the model.
       run.pendingInput = [...run.messages];
-      run.llm = startSpan(run.emitter, {
+      run.llm = startSpan({
         name: `LLM call (turn ${run.turnIndex})`,
         parent: run.root,
         startTime: now(event.message),
@@ -167,7 +138,7 @@ export default function laminar(pi: PiApi): void {
       run.finalAssistantText = extractText(message.content) || run.finalAssistantText;
       run.llm.end(now(message));
       run.llm = null;
-      flush(run.emitter);
+      flush();
     } catch (e) {
       info(`message_end failed (swallowed): ${e}`);
     }
@@ -178,7 +149,7 @@ export default function laminar(pi: PiApi): void {
       if (!run || !event.toolCallId) {
         return;
       }
-      const span = startSpan(run.emitter, {
+      const span = startSpan({
         name: event.toolName ?? "tool",
         parent: run.root,
         startTime: new Date(),
@@ -207,7 +178,7 @@ export default function laminar(pi: PiApi): void {
         if (!span) {
           return;
         }
-        span.setAttributes({ [SPAN_OUTPUT_ATTR]: jsonDumpsTruncated(event.result ?? null) });
+        span.setOutput(event.result ?? null);
         if (event.isError) {
           span.setError("tool reported isError");
         }
@@ -220,7 +191,7 @@ export default function laminar(pi: PiApi): void {
         });
         span.end(new Date());
         run.tools.delete(event.toolCallId);
-        flush(run.emitter);
+        flush();
       } catch (e) {
         info(`tool_execution_end failed (swallowed): ${e}`);
       }
@@ -230,13 +201,11 @@ export default function laminar(pi: PiApi): void {
   /** Close a run: set root output, sweep orphans, end root, export. */
   const finishRun = (r: RunState, reason: string): void => {
     sweepOpenSpans(r);
-    r.root.setAttributes({
-      [SPAN_OUTPUT_ATTR]: jsonDumpsTruncated({ role: "assistant", content: r.finalAssistantText }),
-    });
+    r.root.setOutput({ role: "assistant", content: r.finalAssistantText });
     if (!r.root.isEnded) {
       r.root.end(new Date());
     }
-    flush(r.emitter);
+    flush();
     debug(`run ended (${reason})`);
   };
 
@@ -266,7 +235,7 @@ export default function laminar(pi: PiApi): void {
   });
 }
 
-/** Close any spans still open at run end (orphan sweep, ticket 2). */
+/** Close any spans still open at run end (orphan sweep). */
 function sweepOpenSpans(run: RunState): void {
   const end = new Date();
   if (run.llm && !run.llm.isEnded) {

@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
-import { test } from "node:test";
-import * as zlib from "node:zlib";
+import { afterEach, test } from "node:test";
+import { Laminar } from "@lmnr-ai/lmnr";
+import {
+  InMemorySpanExporter,
+  type ReadableSpan,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 
-// ---- OTLP capture server: collects exported spans as decoded objects ----
+// ---- Span capture: read finished spans straight out of the SDK ----
+// The extension now delegates OTLP export to the SDK, so the test injects an
+// in-memory exporter via `spanProcessor` instead of standing up an OTLP sink.
+// The extension's `initTracing` sees Laminar already initialized and no-ops, so
+// this exercises the real span-construction path end to end.
 interface CapturedSpan {
   name: string;
   spanId: string;
@@ -13,53 +22,41 @@ interface CapturedSpan {
   attrs: Record<string, unknown>;
 }
 
-function decodeAttrValue(v: any): unknown {
-  if (v == null) return undefined;
-  if ("stringValue" in v) return v.stringValue;
-  if ("intValue" in v) return Number(v.intValue);
-  if ("doubleValue" in v) return v.doubleValue;
-  if ("boolValue" in v) return v.boolValue;
-  if ("arrayValue" in v) return (v.arrayValue.values ?? []).map(decodeAttrValue);
-  return undefined;
+function toCaptured(s: ReadableSpan): CapturedSpan {
+  const parentSpanId =
+    (s as { parentSpanContext?: { spanId?: string } }).parentSpanContext?.spanId ??
+    (s as { parentSpanId?: string }).parentSpanId ??
+    undefined;
+  return {
+    name: s.name,
+    spanId: s.spanContext().spanId,
+    parentSpanId,
+    status: { code: s.status?.code },
+    attrs: { ...s.attributes },
+  };
 }
 
-function decodeSpans(body: any, out: CapturedSpan[]): void {
-  for (const rs of body.resourceSpans ?? []) {
-    for (const ss of rs.scopeSpans ?? []) {
-      for (const s of ss.spans ?? []) {
-        const attrs: Record<string, unknown> = {};
-        for (const a of s.attributes ?? []) {
-          attrs[a.key] = decodeAttrValue(a.value);
-        }
-        out.push({
-          name: s.name,
-          spanId: s.spanId,
-          parentSpanId: s.parentSpanId || undefined,
-          status: s.status,
-          attrs,
-        });
-      }
-    }
-  }
+const exporter = new InMemorySpanExporter();
+
+function initSdk(): void {
+  Laminar.initialize({
+    projectApiKey: "sk-test",
+    baseUrl: process.env.LMNR_BASE_URL,
+    spanProcessor: new SimpleSpanProcessor(exporter),
+    instrumentModules: {},
+  });
 }
 
-async function startCaptureServer(spans: CapturedSpan[]): Promise<{ url: string; close: () => Promise<void> }> {
-  const server = http.createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => {
-      try {
-        let buf = Buffer.concat(chunks);
-        if (req.headers["content-encoding"] === "gzip") {
-          buf = zlib.gunzipSync(buf);
-        }
-        decodeSpans(JSON.parse(buf.toString("utf8")), spans);
-      } catch {
-        // ignore malformed bodies in the test sink
-      }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end("{}");
-    });
+function capturedSpans(): CapturedSpan[] {
+  return exporter.getFinishedSpans().map(toCaptured);
+}
+
+// Black-hole sink: the SDK's debug-mode rollout registration fire-and-forgets a
+// POST; give it a local 200 so no test touches the real API.
+async function startSink(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as AddressInfo).port;
@@ -68,6 +65,20 @@ async function startCaptureServer(spans: CapturedSpan[]): Promise<{ url: string;
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
+
+afterEach(async () => {
+  await Laminar.shutdown();
+  exporter.reset();
+  for (const k of [
+    "LMNR_PROJECT_API_KEY",
+    "LMNR_BASE_URL",
+    "LMNR_DEBUG",
+    "LMNR_DEBUG_SESSION_ID",
+    "LMNR_SPAN_CONTEXT",
+  ]) {
+    delete process.env[k];
+  }
+});
 
 // ---- Fake pi API ----
 function makeFakePi() {
@@ -93,22 +104,14 @@ function makeFakePi() {
   return { pi, emit };
 }
 
-async function waitForSpans(spans: CapturedSpan[], count: number, timeoutMs = 3000): Promise<void> {
-  const start = Date.now();
-  while (spans.length < count && Date.now() - start < timeoutMs) {
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
-
 const asstStart = { message: { role: "assistant", content: [], model: "us.anthropic.claude-opus-4-8", provider: "amazon-bedrock" } };
 
 test("end-to-end: pi event stream produces the expected Laminar span tree", async () => {
-  const spans: CapturedSpan[] = [];
-  const sink = await startCaptureServer(spans);
+  const sink = await startSink();
   process.env.LMNR_PROJECT_API_KEY = "sk-test";
   process.env.LMNR_BASE_URL = sink.url;
+  initSdk();
 
-  // Import AFTER env is set (config reads at call time, but be safe).
   const { default: laminar } = await import("../src/index.js");
   const { pi, emit } = makeFakePi();
   laminar(pi);
@@ -146,7 +149,7 @@ test("end-to-end: pi event stream produces the expected Laminar span tree", asyn
   });
   await emit("agent_end", { messages: [] });
 
-  await waitForSpans(spans, 4);
+  const spans = capturedSpans();
   await sink.close();
 
   assert.equal(spans.length, 4, `expected 4 spans, got ${spans.length}`);
@@ -186,12 +189,12 @@ test("end-to-end: pi event stream produces the expected Laminar span tree", asyn
 });
 
 test("debugger mode stamps rollout.session_id on every span", async () => {
-  const spans: CapturedSpan[] = [];
-  const sink = await startCaptureServer(spans);
+  const sink = await startSink();
   process.env.LMNR_PROJECT_API_KEY = "sk-test";
   process.env.LMNR_BASE_URL = sink.url;
   process.env.LMNR_DEBUG = "true";
   process.env.LMNR_DEBUG_SESSION_ID = "rollout-xyz";
+  initSdk();
 
   const { default: laminar } = await import("../src/index.js");
   const { pi, emit } = makeFakePi();
@@ -211,7 +214,7 @@ test("debugger mode stamps rollout.session_id on every span", async () => {
   });
   await emit("agent_end", {});
 
-  await waitForSpans(spans, 2);
+  const spans = capturedSpans();
   await sink.close();
 
   const key = "lmnr.association.properties.metadata.rollout.session_id";
@@ -219,7 +222,46 @@ test("debugger mode stamps rollout.session_id on every span", async () => {
   for (const s of spans) {
     assert.equal(s.attrs[key], "rollout-xyz", `${s.name} carries the rollout session id`);
   }
+});
 
-  delete process.env.LMNR_DEBUG;
-  delete process.env.LMNR_DEBUG_SESSION_ID;
+test("injected LMNR_SPAN_CONTEXT propagates trace_type onto every span", async () => {
+  const sink = await startSink();
+  process.env.LMNR_PROJECT_API_KEY = "sk-test";
+  process.env.LMNR_BASE_URL = sink.url;
+  // Mirrors what Harbor injects for an eval trial: trace_type travels in the
+  // same JSON as the ids (LaminarSpanContext.model_dump_json).
+  process.env.LMNR_SPAN_CONTEXT = JSON.stringify({
+    trace_id: "3dbfd1ba-ff43-9db7-b08f-6796af502e35",
+    span_id: "00000000-0000-0000-1234-567890abcdef",
+    is_remote: true,
+    trace_type: "EVALUATION",
+  });
+  initSdk();
+
+  const { default: laminar } = await import("../src/index.js");
+  const { pi, emit } = makeFakePi();
+  laminar(pi);
+
+  await emit("before_agent_start", { prompt: "hi" });
+  await emit("message_start", asstStart);
+  await emit("message_end", {
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      provider: "amazon-bedrock",
+      model: "us.anthropic.claude-opus-4-8",
+      stopReason: "endTurn",
+      usage: { input: 1, output: 1, totalTokens: 2 },
+    },
+  });
+  await emit("agent_end", {});
+
+  const spans = capturedSpans();
+  await sink.close();
+
+  const key = "lmnr.association.properties.trace_type";
+  assert.ok(spans.length >= 2, `expected spans, got ${spans.length}`);
+  for (const s of spans) {
+    assert.equal(s.attrs[key], "EVALUATION", `${s.name} carries trace_type=EVALUATION`);
+  }
 });
