@@ -1,16 +1,28 @@
 {
-  "name": "lmnr-pi-extension",
+  "name": "@lmnr-ai/pi-extension",
   "version": "0.1.0",
-  "description": "Laminar observability extension for the pi coding agent — live in-process OTLP tracing",
+  "description": "Laminar observability extension for the pi coding agent — live in-process tracing via the Laminar SDK",
   "type": "module",
   "license": "Apache-2.0",
-  "keywords": ["pi-package", "pi", "laminar", "observability", "tracing", "otel", "otlp"],
+  "author": "founders@lmnr.ai",
+  "homepage": "https://github.com/lmnr-ai/lmnr-pi-extension#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lmnr-ai/lmnr-pi-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lmnr-ai/lmnr-pi-extension/issues"
+  },
+  "keywords": ["pi-package", "pi", "laminar", "lmnr", "observability", "tracing", "otel", "otlp"],
   "files": ["src", "README.md"],
   "engines": {
     "node": ">=18"
   },
   "pi": {
     "extensions": ["src/index.ts"]
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
