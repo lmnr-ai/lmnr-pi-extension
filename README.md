@@ -1,35 +1,35 @@
-# Laminar pi extension
+# Laminar Pi extension
 
-[Laminar](https://www.lmnr.ai) observability for the [pi coding agent](https://github.com/badlogic/pi-mono).
+[Laminar](https://www.lmnr.ai) observability for the [Pi coding agent](https://github.com/badlogic/pi-mono).
 
-This extension subscribes to pi's lifecycle events and emits, **live and in-process**, one
+This extension subscribes to Pi's lifecycle events and emits, **live and in-process**, one
 Laminar trace per agent run — with LLM and tool spans — grouped into a Laminar session by
-pi's session id. Tracing, export, and debugger sessions are all handled by the
+Pi's session id. Tracing, export, and debugger sessions are all handled by the
 [`@lmnr-ai/lmnr`](https://www.npmjs.com/package/@lmnr-ai/lmnr) SDK.
 
 ## Installation
 
-Add the package to the `packages` array in your pi `settings.json`:
-
-```json
-{
-  "packages": ["npm:@lmnr-ai/pi-extension"]
-}
+```sh
+npx lmnr-cli@latest plugin add pi
 ```
 
-pi installs the package (and its dependencies) and loads it automatically. Then set your
-Laminar project API key:
+The CLI logs you in, lets you pick the Laminar project that should receive your Pi traces,
+mints a project API key, writes it to `~/.config/lmnr/pi-extension.json`, and runs
+`pi install npm:@lmnr-ai/pi-extension`. Restart Pi and every run is traced.
+
+Prefer to wire it up by hand? Install the package and set the key in your environment:
 
 ```sh
+pi install npm:@lmnr-ai/pi-extension
 export LMNR_PROJECT_API_KEY="..."
 ```
 
-That's it — with the key set, every pi run is traced to Laminar. Without it, the extension
-disables itself and pi runs untouched (fail-open).
+Without a key from either source, the extension disables itself and Pi runs untouched
+(fail-open).
 
 ## What you get
 
-One Laminar **trace = one pi agent run** (`before_agent_start` → `agent_end`). Spans open on
+One Laminar **trace = one Pi agent run** (`before_agent_start` → `agent_end`). Spans open on
 start events and close on end events — fully granular and realtime — under the run root:
 
 ```
@@ -46,12 +46,15 @@ and cost-attributed in the Laminar UI without any extra setup.
 
 ## Configuration
 
-All configuration is read from the environment.
+Configuration comes from the environment, falling back to `~/.config/lmnr/pi-extension.json`
+(`{ "projectApiKey": "...", "baseUrl": "..." }`, mode 0600) written by
+`lmnr-cli plugin add pi`. The environment wins, so you can redirect a single run without
+editing the file.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `LMNR_PROJECT_API_KEY` | yes | — | Laminar project API key. Absent ⇒ tracing disabled (fail-open). |
-| `LMNR_BASE_URL` | no | `https://api.lmnr.ai` | Laminar API base URL (self-hosted deployments). |
+| `LMNR_PROJECT_API_KEY` | yes | config file | Laminar project API key. Absent from both ⇒ tracing disabled (fail-open). |
+| `LMNR_BASE_URL` | no | config file, else `https://api.lmnr.ai` | Laminar API base URL (self-hosted deployments). |
 | `LMNR_USER_ID` | no | — | Associates every trace with a user id. |
 | `LMNR_MAX_CHARS` | no | `20000` | Truncation cap for span input/output values. |
 | `LMNR_DEBUG` | no | — | Enables debugger sessions + file logging to `~/.pi/agent/lmnr-pi-extension.log`. |
@@ -73,7 +76,7 @@ npm run typecheck    # tsc --noEmit
 npm test             # node:test via tsx — unit + end-to-end span-tree tests
 ```
 
-The end-to-end test (`tests/extension.test.ts`) drives the extension with synthetic pi events
+The end-to-end test (`tests/extension.test.ts`) drives the extension with synthetic Pi events
 against an in-memory span exporter and asserts the resulting span tree — no network or Laminar
 account required.
 
