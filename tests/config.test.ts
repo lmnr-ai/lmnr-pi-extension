@@ -38,6 +38,37 @@ test("getLaminarConfig defaults baseUrl and null userId", () => {
   clear();
 });
 
+/** Write the credentials file `lmnr-cli login` persists. */
+function writeCredentials(body: string): void {
+  const file = path.join(path.dirname(configFile()), "credentials.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body, "utf-8");
+}
+
+test("userId falls back to the lmnr-cli logged-in identity", () => {
+  clear();
+  process.env.LMNR_PROJECT_API_KEY = "sk-test";
+  writeCredentials(JSON.stringify({ userEmail: "dev@example.com", userId: "uuid-1" }));
+  // Email is preferred over the raw id, matching the CC and Codex plugins.
+  assert.equal(getLaminarConfig()?.userId, "dev@example.com");
+
+  writeCredentials(JSON.stringify({ userId: "uuid-1" }));
+  assert.equal(getLaminarConfig()?.userId, "uuid-1", "falls back to userId when no email");
+
+  writeCredentials("not json{");
+  assert.equal(getLaminarConfig()?.userId, null, "unreadable credentials leave the trace unattributed");
+  clear();
+});
+
+test("LMNR_USER_ID wins over the logged-in identity", () => {
+  clear();
+  process.env.LMNR_PROJECT_API_KEY = "sk-test";
+  process.env.LMNR_USER_ID = "override";
+  writeCredentials(JSON.stringify({ userEmail: "dev@example.com" }));
+  assert.equal(getLaminarConfig()?.userId, "override");
+  clear();
+});
+
 test("getLaminarConfig strips trailing slashes and reads userId", () => {
   clear();
   process.env.LMNR_PROJECT_API_KEY = "sk-test";

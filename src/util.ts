@@ -24,15 +24,6 @@ export function jsonDumpsTruncated(value: Json, maxChars = MAX_CHARS): string {
   return truncateText(jsonDumps(value), maxChars);
 }
 
-/** Parse a pi timestamp (ISO string) to a Date, or null. */
-export function parseTimestamp(ts: unknown): Date | null {
-  if (typeof ts !== "string") {
-    return null;
-  }
-  const d = new Date(ts);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 /** Extract concatenated text from a pi content array (text blocks only). */
 export function extractText(content: Json): string {
   if (typeof content === "string") {

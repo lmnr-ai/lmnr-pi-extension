@@ -11,8 +11,19 @@ export interface PiUsage {
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
+  /** Subset of cacheWrite written with 1h retention (Anthropic only). */
+  cacheWrite1h?: number;
+  /** Reasoning tokens, when the provider reports them. A subset of `output`. */
+  reasoning?: number;
   totalTokens?: number;
   cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+}
+
+/** A pi tool as reported by `pi.getAllTools()` (name, description, JSON schema). */
+export interface PiToolInfo {
+  name: string;
+  description?: string;
+  parameters?: Json;
 }
 
 /** A pi assistant `message` (the `message` field of a `turn_end`/`message_end` event). */
@@ -22,7 +33,11 @@ export interface PiAssistantMessage {
   api?: string;
   provider?: string;
   model?: string;
+  /** "stop" | "length" | "toolUse" | "error" | "aborted". */
   stopReason?: string;
+  errorMessage?: string;
   usage?: PiUsage;
-  timestamp?: string;
 }
+
+/** pi stop reasons that mean the turn did not complete normally. */
+export const FAILED_STOP_REASONS = new Set(["error", "aborted"]);

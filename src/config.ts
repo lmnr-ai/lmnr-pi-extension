@@ -63,6 +63,30 @@ interface FileConfig {
   baseUrl?: unknown;
 }
 
+/**
+ * User identity persisted by `lmnr-cli login` (RFC 8628 device flow), so a
+ * logged-in user is attributed with zero config. Returns the stored email
+ * (preferred) or user id, or null if not logged in / unreadable (fail-open).
+ * Same file and precedence as the Claude Code and Codex plugins.
+ */
+function readLoggedInUserId(): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(globalLmnrDirectory(), "credentials.json"), "utf-8");
+    const creds: unknown = JSON.parse(raw);
+    if (!creds || typeof creds !== "object") {
+      return null;
+    }
+    const { userEmail, userId } = creds as { userEmail?: unknown; userId?: unknown };
+    if (typeof userEmail === "string" && userEmail) {
+      return userEmail;
+    }
+    return typeof userId === "string" && userId ? userId : null;
+  } catch {
+    // Not logged in, no permission, or invalid JSON — leave the trace unattributed.
+    return null;
+  }
+}
+
 /** Read the config file. Missing, unreadable, or malformed all yield {} (fail-open). */
 function readConfigFile(): FileConfig {
   try {
@@ -106,6 +130,6 @@ export function getLaminarConfig(): LaminarConfig | null {
   return {
     apiKey,
     baseUrl: rawBaseUrl.replace(/\/+$/, ""),
-    userId: env("LMNR_USER_ID") || null,
+    userId: env("LMNR_USER_ID") || readLoggedInUserId() || null,
   };
 }
