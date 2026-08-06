@@ -1,19 +1,26 @@
-import { buildLlmAttributes, buildOutputMessage } from "./attributes.js";
+import { buildLlmAttributes, buildToolDefinitions } from "./attributes.js";
 import { getLaminarConfig } from "./config.js";
 import { debug, info } from "./logger.js";
+import { systemMessage, toChatMessages } from "./messages.js";
 import { flush, initTracing, SpanHandle, startSpan } from "./tracer.js";
-import type { Json, PiAssistantMessage } from "./types.js";
-import { extractText, parseTimestamp } from "./util.js";
+import { FAILED_STOP_REASONS, type Json, type PiAssistantMessage, type PiToolInfo } from "./types.js";
+import { extractText, jsonDumpsTruncated } from "./util.js";
 
 // ----------------- Minimal structural pi types -----------------
 // The extension is loaded BY pi, which supplies these objects. We type them
 // structurally (rather than importing pi) so the extension builds standalone.
 interface PiApi {
   on(event: string, handler: (event: any, ctx: PiContext) => unknown): void;
+  /** Every configured tool, with its JSON-schema parameters. */
+  getAllTools?(): PiToolInfo[];
+  /** Names of the tools active for the current run. */
+  getActiveTools?(): string[];
 }
 interface PiContext {
   sessionManager: { getSessionId(): string; getCwd?(): string };
   cwd?: string;
+  /** pi's effective system prompt for the current run. */
+  getSystemPrompt?(): string;
 }
 
 // A pi message as delivered on message_start/_end — role may be non-assistant.
@@ -26,12 +33,18 @@ interface RunState {
   root: SpanHandle;
   llm: SpanHandle | null; // current turn's open LLM span
   tools: Map<string, SpanHandle>; // toolCallId -> open TOOL span
-  turnIndex: number;
-  // Running conversation transcript, grown across turns (user prompt →
-  // assistant messages → tool results). Snapshotted at each message_start as
-  // that turn's LLM input, so every turn — not just turn 0 — reports its input.
-  messages: Json[];
-  pendingInput: Json[] | null; // input snapshot for the currently-open LLM span
+  turnIndex: number; // pi's own turn index, which restarts at 0 each agent pass
+  llmCount: number; // monotonic across passes, so span names stay unique
+  failure: string | null; // set when a turn ends in error/aborted
+  // The run's effective system prompt, and the tools it was built with — both
+  // fixed for the run and both resolved at agent_start. The system prompt heads
+  // every turn's input; the tool definitions ride every LLM span.
+  systemPrompt: string;
+  toolDefinitions: string | null; // serialized, ready to set as an attribute
+  // The messages pi is about to send, captured from the `context` event before
+  // each LLM call. pi assembles this list itself — full session history and
+  // post-compaction state included — so we report it rather than reconstruct it.
+  pendingInput: Json[] | null;
   finalAssistantText: string;
 }
 
@@ -49,8 +62,10 @@ export default function laminar(pi: PiApi): void {
   // may be parallel (handled by the toolCallId-keyed map).
   let run: RunState | null = null;
 
-  const now = (msg?: PiAssistantMessage): Date => parseTimestamp(msg?.timestamp) ?? new Date();
-
+  // Span times come from the wall clock at the moment the event fires. pi's
+  // message `timestamp` is the message's creation time, not its completion time,
+  // so it is not an end time — and it arrives as a number, which the old
+  // string-only parse silently rejected, meaning this was always the real path.
   const isAssistant = (m: AgentMessage | undefined): m is PiAssistantMessage =>
     !!m && m.role === "assistant";
 
@@ -85,7 +100,10 @@ export default function laminar(pi: PiApi): void {
         llm: null,
         tools: new Map(),
         turnIndex: 0,
-        messages: [{ role: "user", content: prompt }],
+        llmCount: 0,
+        failure: null,
+        systemPrompt: "",
+        toolDefinitions: null,
         pendingInput: null,
         finalAssistantText: "",
       };
@@ -96,28 +114,71 @@ export default function laminar(pi: PiApi): void {
     }
   });
 
-  pi.on("turn_start", (event: { turnIndex?: number }) => {
-    if (run && typeof event.turnIndex === "number") {
-      run.turnIndex = event.turnIndex;
+  /** The tools active for this run, serialized for `gen_ai.tool.definitions`. */
+  const snapshotToolDefinitions = (): string | null => {
+    const all = pi.getAllTools?.();
+    if (!all?.length) {
+      return null;
+    }
+    const active = new Set(pi.getActiveTools?.() ?? all.map((t) => t.name));
+    const definitions = buildToolDefinitions(all.filter((t) => active.has(t.name)));
+    return definitions.length > 0 ? jsonDumpsTruncated(definitions) : null;
+  };
+
+  // pi chains the system prompt through every `before_agent_start` handler, so
+  // the value ours sees there is not necessarily the one that gets sent. By
+  // `agent_start` the chain has settled and `ctx.getSystemPrompt()` returns the
+  // effective prompt. Both it and the active tool set stay fixed for the run.
+  pi.on("agent_start", (_event: unknown, ctx: PiContext) => {
+    try {
+      if (run) {
+        run.systemPrompt = ctx.getSystemPrompt?.() ?? "";
+        run.toolDefinitions = snapshotToolDefinitions();
+      }
+    } catch (e) {
+      info(`agent_start failed (swallowed): ${e}`);
     }
   });
 
-  pi.on("message_start", (event: { message?: AgentMessage }) => {
+  // pi assembles the outgoing message list itself and hands it over before every
+  // LLM call — full session history, compaction already applied, extension-
+  // injected messages included. Reporting this beats reconstructing it from the
+  // event stream, which silently omitted everything before the current prompt.
+  pi.on("context", (event: { messages?: Json[] }) => {
     try {
-      if (!run || !isAssistant(event.message)) {
+      if (!run) {
         return;
       }
-      // Snapshot the transcript-so-far as this turn's input BEFORE the
-      // assistant message is appended — this is what was sent to the model.
-      run.pendingInput = [...run.messages];
+      const conversation = toChatMessages(event.messages ?? []);
+      run.pendingInput = run.systemPrompt
+        ? [systemMessage(run.systemPrompt), ...conversation]
+        : conversation;
+      // This event is pi's "about to call the model", so it is where the LLM span
+      // opens. `message_start` does not fire until the response is already coming
+      // back, which left the provider latency — around 95% of the call — outside
+      // the span, and made every LLM duration in the trace meaningless.
+      if (run.llm && !run.llm.isEnded) {
+        // A previous call never reached message_end (aborted mid-flight).
+        run.llm.end(new Date());
+      }
       run.llm = startSpan({
-        name: `LLM call (turn ${run.turnIndex})`,
+        // Named from our own counter, not pi's turn index: pi restarts that at 0
+        // on every agent pass, so a run with a retry or continuation would
+        // otherwise carry two spans both called "turn 0".
+        name: `LLM call (turn ${run.llmCount})`,
         parent: run.root,
-        startTime: now(event.message),
+        startTime: new Date(),
         spanType: "LLM",
       });
+      run.llmCount += 1;
     } catch (e) {
-      info(`message_start failed (swallowed): ${e}`);
+      info(`context failed (swallowed): ${e}`);
+    }
+  });
+
+  pi.on("turn_start", (event: { turnIndex?: number }) => {
+    if (run && typeof event.turnIndex === "number") {
+      run.turnIndex = event.turnIndex;
     }
   });
 
@@ -130,13 +191,20 @@ export default function laminar(pi: PiApi): void {
       run.llm.setAttributes({
         ...buildLlmAttributes(message, run.pendingInput),
         "pi.turn.index": run.turnIndex,
+        ...(run.toolDefinitions ? { "gen_ai.tool.definitions": run.toolDefinitions } : {}),
       });
-      // Append this assistant message (incl. tool_calls) to the transcript so
-      // the next turn's input snapshot includes it.
-      run.messages.push(buildOutputMessage(message));
       run.pendingInput = null;
       run.finalAssistantText = extractText(message.content) || run.finalAssistantText;
-      run.llm.end(now(message));
+      // A turn that errored or was aborted marks its span — and the run — failed.
+      // pi retries some of these, so the run's verdict is whatever the last turn
+      // reported: a successful retry clears it.
+      if (message.stopReason && FAILED_STOP_REASONS.has(message.stopReason)) {
+        run.failure = message.errorMessage ?? message.stopReason;
+        run.llm.setError(run.failure);
+      } else {
+        run.failure = null;
+      }
+      run.llm.end(new Date());
       run.llm = null;
       flush();
     } catch (e) {
@@ -182,13 +250,6 @@ export default function laminar(pi: PiApi): void {
         if (event.isError) {
           span.setError("tool reported isError");
         }
-        // Feed the tool result back into the transcript so the next turn's LLM
-        // input reflects what the model actually saw.
-        run.messages.push({
-          role: "tool",
-          tool_call_id: event.toolCallId,
-          content: event.result ?? null,
-        });
         span.end(new Date());
         run.tools.delete(event.toolCallId);
         flush();
@@ -202,6 +263,9 @@ export default function laminar(pi: PiApi): void {
   const finishRun = (r: RunState, reason: string): void => {
     sweepOpenSpans(r);
     r.root.setOutput({ role: "assistant", content: r.finalAssistantText });
+    if (r.failure) {
+      r.root.setError(r.failure);
+    }
     if (!r.root.isEnded) {
       r.root.end(new Date());
     }
@@ -209,13 +273,20 @@ export default function laminar(pi: PiApi): void {
     debug(`run ended (${reason})`);
   };
 
-  pi.on("agent_end", () => {
+  // `agent_end` ends one pass of the agent loop — NOT the run. pi drives
+  // `while (await handlePostAgentRun()) await agent.continue()`, so an auto-retry,
+  // an auto-compaction retry, or a queued follow-up starts another
+  // agent_start…agent_end pass under the same user prompt, with no second
+  // before_agent_start. `agent_settled` fires once, from a `finally`, when pi has
+  // decided not to continue — that is the run boundary. Closing on agent_end
+  // instead dropped every span of every continuation on the floor.
+  pi.on("agent_settled", () => {
     try {
       if (run) {
-        finishRun(run, "agent_end");
+        finishRun(run, "agent_settled");
       }
     } catch (e) {
-      info(`agent_end failed (swallowed): ${e}`);
+      info(`agent_settled failed (swallowed): ${e}`);
     } finally {
       run = null;
     }
