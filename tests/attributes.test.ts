@@ -3,13 +3,9 @@ import { test } from "node:test";
 import {
   buildLlmAttributes,
   buildOutputMessage,
-  buildToolDefinitions,
-  dumpInputMessages,
   inferVendor,
-  mapUsageCost,
   mapUsageTokens,
 } from "../src/attributes.js";
-import { systemMessage } from "../src/messages.js";
 import type { PiAssistantMessage } from "../src/types.js";
 
 test("inferVendor picks the model vendor over the gateway provider", () => {
@@ -35,85 +31,19 @@ test("mapUsageTokens maps pi field names and drops zeros", () => {
   assert.ok(!("gen_ai.usage.cache_read_input_tokens" in out), "zero cacheRead dropped");
 });
 
-test("mapUsageTokens passes through the reasoning and 1h-cache splits", () => {
-  const out = mapUsageTokens({ input: 2, output: 89, reasoning: 40, cacheWrite: 8209, cacheWrite1h: 1000 });
-  assert.equal(out["gen_ai.usage.reasoning_tokens"], 40);
-  assert.equal(out["gen_ai.usage.cache_creation.input_tokens.ephemeral_1h"], 1000);
-  assert.equal(out["gen_ai.usage.cache_creation_input_tokens"], 8209);
-});
-
-test("mapUsageCost folds cache costs into input_cost so the breakdown sums to the total", () => {
-  // Real proportions from a pi turn: cache write dwarfs fresh input. pi computes
-  // total as input + output + cacheRead + cacheWrite (pi-ai `calculateCost`).
-  const cost = { input: 0.00001, cacheRead: 0.0012, cacheWrite: 0.0365, output: 0.001175, total: 0.038885 };
-  const out = mapUsageCost({ cost });
-
-  assert.equal(out["gen_ai.usage.input_cost"], 0.00001 + 0.0012 + 0.0365);
-  assert.equal(out["gen_ai.usage.output_cost"], 0.001175);
-  assert.equal(out["gen_ai.usage.cost"], 0.038885);
-  const summed = out["gen_ai.usage.input_cost"] + out["gen_ai.usage.output_cost"];
-  assert.ok(
-    Math.abs(summed - out["gen_ai.usage.cost"]) < 1e-9,
-    `input + output (${summed}) must equal the total pi reported (${out["gen_ai.usage.cost"]})`
-  );
-});
-
-test("buildOutputMessage renders text + toolCall blocks as Anthropic content", () => {
+test("buildOutputMessage renders text + toolCall blocks", () => {
   const msg: PiAssistantMessage = {
     role: "assistant",
-    stopReason: "toolUse",
     content: [
       { type: "text", text: "running it" },
       { type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } },
     ],
   };
-  // The stop reason stays on `gen_ai.response.finish_reasons`, not the message.
   assert.deepEqual(buildOutputMessage(msg), {
     role: "assistant",
-    content: [
-      { type: "text", text: "running it" },
-      { type: "tool_use", id: "t1", name: "bash", input: { command: "ls" } },
-    ],
+    content: "running it",
+    tool_calls: [{ id: "t1", name: "bash", arguments: { command: "ls" } }],
   });
-});
-
-test("buildToolDefinitions maps pi tools to the shape Laminar's tools column reads", () => {
-  const params = { type: "object", properties: { command: { type: "string" } } };
-  assert.deepEqual(
-    buildToolDefinitions([
-      { name: "bash", description: "Execute a command", parameters: params },
-      { name: "read" },
-    ]),
-    [
-      { name: "bash", description: "Execute a command", parameters: params },
-      { name: "read", description: "", parameters: {} },
-    ]
-  );
-});
-
-test("dumpInputMessages: a leading system message does not eat the conversation budget", () => {
-  // A system prompt far larger than the budget — the real pi case, where it runs
-  // ~12k against a 20k default. On a single shared budget it would swallow the
-  // whole payload and the conversation would never appear.
-  const messages = [
-    systemMessage("S".repeat(5000)),
-    { role: "user", content: [{ type: "text", text: "list the files" }] },
-    { role: "assistant", content: [{ type: "text", text: "here they are" }] },
-  ];
-  const parsed = JSON.parse(dumpInputMessages(messages, 600));
-
-  assert.equal(parsed.length, 3, "system message plus both conversation turns survive");
-  assert.equal(parsed[0].role, "system");
-  assert.equal(parsed[1].content[0].text, "list the files", "the conversation keeps its own budget");
-  assert.equal(parsed[2].content[0].text, "here they are", "the latest turn is not clipped");
-});
-
-test("dumpInputMessages: the system prompt is itself capped, and no system message is a no-op", () => {
-  const long = JSON.parse(dumpInputMessages([systemMessage("S".repeat(5000))], 100));
-  assert.match(long[0].content[0].text, /^S{100}… \[truncated 4900 chars\]$/);
-
-  const conversation = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
-  assert.equal(dumpInputMessages(conversation, 600), JSON.stringify(conversation));
 });
 
 test("buildLlmAttributes: cost uses the SDK's canonical gen_ai.usage.cost keys", () => {

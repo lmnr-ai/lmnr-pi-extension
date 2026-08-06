@@ -1,15 +1,10 @@
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// ----------------- Configuration (env first, then config file) -----------------
-// No Pi `userConfig` manifest exists, so config comes from process.env, falling
-// back to the file `lmnr-cli plugin add pi` writes. We reuse the plain LMNR_*
-// names (Laminar's SDK convention). Debugger/rollout-session resolution used to
-// live here; the SDK now owns it (see tracer.initTracing).
-//
-// This module must not import ./logger — logger imports DEBUG from here, so an
-// import back would be circular. Every failure path is therefore silent.
+// ----------------- Configuration (env-primary) -----------------
+// No pi `userConfig` manifest exists, so config comes from process.env. We reuse
+// the plain LMNR_* names (Laminar's SDK convention). Debugger/rollout-session
+// resolution used to live here; the SDK now owns it (see tracer.initTracing).
 
 /** Read a plain env var, trimmed; "" when absent. */
 function env(name: string): string {
@@ -28,81 +23,9 @@ function parseMaxChars(): number {
 }
 export const MAX_CHARS = parseMaxChars();
 
-/** Absolute path to the extension's debug log (Pi is a TUI — never log to stdout/stderr). */
+/** Absolute path to the extension's debug log (pi is a TUI — never log to stdout/stderr). */
 export function logFile(): string {
   return path.join(os.homedir(), ".pi", "agent", "lmnr-pi-extension.log");
-}
-
-// ----------------- Config file (written by `lmnr-cli plugin add pi`) -----------------
-// The CLI mints a project API key and writes it here rather than printing an
-// `export` line, so the key never lands in terminal scrollback or shell history.
-// Same file shape and location convention as the Claude Code and Codex plugins.
-
-const CONFIG_FILE = "pi-extension.json";
-
-/** Directory holding Laminar's per-user config, matching the CLI's own resolution. */
-function globalLmnrDirectory(): string {
-  const xdg = env("XDG_CONFIG_HOME");
-  if (xdg) {
-    return path.join(xdg, "lmnr");
-  }
-  const appData = env("APPDATA");
-  if (process.platform === "win32" && appData) {
-    return path.join(appData, "lmnr");
-  }
-  return path.join(os.homedir(), ".config", "lmnr");
-}
-
-/** Absolute path to the config file `lmnr-cli plugin add pi` writes. */
-export function configFile(): string {
-  return path.join(globalLmnrDirectory(), CONFIG_FILE);
-}
-
-interface FileConfig {
-  projectApiKey?: unknown;
-  baseUrl?: unknown;
-}
-
-/**
- * User identity persisted by `lmnr-cli login` (RFC 8628 device flow), so a
- * logged-in user is attributed with zero config. Returns the stored email
- * (preferred) or user id, or null if not logged in / unreadable (fail-open).
- * Same file and precedence as the Claude Code and Codex plugins.
- */
-function readLoggedInUserId(): string | null {
-  try {
-    const raw = fs.readFileSync(path.join(globalLmnrDirectory(), "credentials.json"), "utf-8");
-    const creds: unknown = JSON.parse(raw);
-    if (!creds || typeof creds !== "object") {
-      return null;
-    }
-    const { userEmail, userId } = creds as { userEmail?: unknown; userId?: unknown };
-    if (typeof userEmail === "string" && userEmail) {
-      return userEmail;
-    }
-    return typeof userId === "string" && userId ? userId : null;
-  } catch {
-    // Not logged in, no permission, or invalid JSON — leave the trace unattributed.
-    return null;
-  }
-}
-
-/** Read the config file. Missing, unreadable, or malformed all yield {} (fail-open). */
-function readConfigFile(): FileConfig {
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(configFile(), "utf-8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as FileConfig;
-    }
-  } catch {
-    // No file yet, no permission, or invalid JSON — treat as unconfigured.
-  }
-  return {};
-}
-
-/** A string field from the config file, trimmed; "" when absent or not a string. */
-function fileString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 export interface LaminarConfig {
@@ -111,25 +34,13 @@ export interface LaminarConfig {
   userId: string | null;
 }
 
-/**
- * Resolve Laminar config, or null when no API key is set (fail-open: Pi runs
- * untraced). The environment wins over the config file, so `LMNR_PROJECT_API_KEY`
- * / `LMNR_BASE_URL` can redirect a single run without editing the file.
- */
+/** Resolve Laminar config from env, or null when the API key is absent (fail-open). */
 export function getLaminarConfig(): LaminarConfig | null {
-  const envApiKey = env("LMNR_PROJECT_API_KEY");
-  const envBaseUrl = env("LMNR_BASE_URL");
-  // Only touch the disk when the env leaves something to resolve.
-  const file = envApiKey && envBaseUrl ? {} : readConfigFile();
-
-  const apiKey = envApiKey || fileString(file.projectApiKey);
+  const apiKey = env("LMNR_PROJECT_API_KEY");
+  const baseUrl = (env("LMNR_BASE_URL") || "https://api.lmnr.ai").replace(/\/+$/, "");
+  const userId = env("LMNR_USER_ID") || null;
   if (!apiKey) {
     return null;
   }
-  const rawBaseUrl = envBaseUrl || fileString(file.baseUrl) || "https://api.lmnr.ai";
-  return {
-    apiKey,
-    baseUrl: rawBaseUrl.replace(/\/+$/, ""),
-    userId: env("LMNR_USER_ID") || readLoggedInUserId() || null,
-  };
+  return { apiKey, baseUrl, userId };
 }
