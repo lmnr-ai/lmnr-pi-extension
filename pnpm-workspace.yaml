@@ -1,0 +1,11 @@
+# Not a workspace — this file exists only to carry pnpm settings, which pnpm 10
+# reads from here rather than from package.json.
+#
+# Neither package needs its install script: esbuild ships its binary as a
+# platform-specific optional dependency, and protobufjs's postinstall is a no-op
+# for library use. Listing them here records that decision and keeps
+# `pnpm install` from warning about ignored build scripts on every CI run.
+# lmnr-ts disallows builds for the same two packages.
+ignoredBuiltDependencies:
+  - esbuild
+  - protobufjs

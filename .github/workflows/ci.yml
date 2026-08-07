@@ -11,9 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # pnpm must be on PATH before setup-node, so setup-node can resolve it.
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test

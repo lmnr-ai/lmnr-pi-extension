@@ -9,18 +9,61 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Mints the OIDC token that npm trades for a short-lived publish
+      # credential, and that signs the provenance attestation. Trusted
+      # publishing cannot work without this.
       id-token: write
     steps:
       - uses: actions/checkout@v6
+      # pnpm must be on PATH before setup-node, so setup-node can resolve it.
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+      # Deliberately no `registry-url` here. registry.npmjs.org is already npm's
+      # default, and passing it makes setup-node write an .npmrc containing
+      # `_authToken=${NODE_AUTH_TOKEN}` and export a placeholder token
+      # (`XXXXX-XXXXX-XXXXX-XXXXX`, see setup-node src/authutil.ts). npm would
+      # then send that junk credential and get a 401 instead of falling back to
+      # trusted publishing. No .npmrc means no credential, which is what makes
+      # npm reach for OIDC.
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+          node-version: 24
+      # Trusted publishing needs npm >= 11.5; node 24 ships 10.x, which silently
+      # never attempts OIDC. Freeze to latest 11, because 12 / latest fails in
+      # publish — https://github.com/npm/cli/issues/9722
+      - run: npm install -g npm@next-11
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      # Prints the two preconditions for trusted publishing, so a failure here
+      # is self-diagnosing rather than a guess. Only presence is printed — the
+      # request token itself must never be echoed.
+      - name: Check publish preconditions
+        run: |
+          echo "npm version: $(npm --version)  (needs >= 11.5 for trusted publishing)"
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            echo "OIDC available: yes"
+          else
+            echo "OIDC available: NO - the id-token permission is not in effect"
+          fi
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "NODE_AUTH_TOKEN: set - it will pre-empt OIDC and cause a 401"
+          else
+            echo "NODE_AUTH_TOKEN: unset (correct)"
+          fi
       # No build step: pi runs the published .ts sources directly via jiti.
+      #
+      # Authentication is trusted publishing (OIDC) — there is deliberately no
+      # NODE_AUTH_TOKEN and no NPM_TOKEN secret. npm exchanges the OIDC token
+      # above for a short-lived credential. This requires a trusted publisher on
+      # npmjs.com for @lmnr-ai/pi-extension, matching repo
+      # lmnr-ai/lmnr-pi-extension, workflow file `publish-to-npm.yml`, and an
+      # empty environment (this job declares no `environment:`).
+      #
+      # pnpm 10 has no OIDC support of its own; `pnpm publish` packs the tarball
+      # and hands it to the npm CLI, which is why the npm version above matters.
       - name: Publish package
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # --no-git-checks: a release build is a detached-HEAD checkout of the tag,
+        # which pnpm otherwise refuses to publish from.
+        run: pnpm publish --provenance --access public --no-git-checks
