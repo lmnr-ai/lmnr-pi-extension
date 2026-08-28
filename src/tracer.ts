@@ -3,7 +3,7 @@ import { SpanStatusCode, type AttributeValue, type Attributes } from "@opentelem
 import type { LaminarConfig } from "./config.js";
 import { info } from "./logger.js";
 import type { Json } from "./types.js";
-import { jsonDumpsTruncated } from "./util.js";
+import { jsonDumps } from "./util.js";
 
 // The only Laminar wire key we still write by hand — every other span field
 // (type, input, session/user, metadata, path nesting) is set through the SDK.
@@ -87,7 +87,7 @@ export function startSpan(args: StartSpanArgs): SpanHandle {
     spanType: args.spanType ?? "DEFAULT",
     startTime,
     ...(args.inputValue !== undefined && args.inputValue !== null
-      ? { input: jsonDumpsTruncated(args.inputValue) }
+      ? { input: jsonDumps(args.inputValue) }
       : {}),
     ...(parentSpanContext ? { parentSpanContext } : {}),
     ...(args.sessionId ? { sessionId: args.sessionId } : {}),
@@ -128,9 +128,9 @@ export class SpanHandle {
     this.span.setAttributes(toOtelAttributes(attributes));
   }
 
-  /** JSON-serialize (truncated) and store as the span's output. */
+  /** JSON-serialize and store as the span's output. */
   setOutput(value: Json): void {
-    this.span.setAttribute(SPAN_OUTPUT_ATTR, jsonDumpsTruncated(value));
+    this.span.setAttribute(SPAN_OUTPUT_ATTR, jsonDumps(value));
   }
 
   /** Mark the span errored (e.g. a tool result with isError). */

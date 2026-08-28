@@ -4,7 +4,7 @@ import { debug, info } from "./logger.js";
 import { systemMessage, toChatMessages } from "./messages.js";
 import { flush, initTracing, SpanHandle, startSpan } from "./tracer.js";
 import { FAILED_STOP_REASONS, type Json, type PiAssistantMessage, type PiToolInfo } from "./types.js";
-import { extractText, jsonDumpsTruncated } from "./util.js";
+import { extractText, jsonDumps } from "./util.js";
 
 // ----------------- Minimal structural pi types -----------------
 // The extension is loaded BY pi, which supplies these objects. We type them
@@ -122,7 +122,7 @@ export default function laminar(pi: PiApi): void {
     }
     const active = new Set(pi.getActiveTools?.() ?? all.map((t) => t.name));
     const definitions = buildToolDefinitions(all.filter((t) => active.has(t.name)));
-    return definitions.length > 0 ? jsonDumpsTruncated(definitions) : null;
+    return definitions.length > 0 ? jsonDumps(definitions) : null;
   };
 
   // pi chains the system prompt through every `before_agent_start` handler, so

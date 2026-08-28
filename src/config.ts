@@ -20,14 +20,6 @@ function env(name: string): string {
 // reads LMNR_DEBUG itself to drive the debugger session — this is separate.
 export const DEBUG = env("LMNR_DEBUG").toLowerCase() === "true";
 
-const DEFAULT_MAX_CHARS = 20000;
-
-function parseMaxChars(): number {
-  const n = Number.parseInt(env("LMNR_MAX_CHARS"), 10);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_CHARS;
-}
-export const MAX_CHARS = parseMaxChars();
-
 /** Absolute path to the extension's debug log (Pi is a TUI — never log to stdout/stderr). */
 export function logFile(): string {
   return path.join(os.homedir(), ".pi", "agent", "lmnr-pi-extension.log");

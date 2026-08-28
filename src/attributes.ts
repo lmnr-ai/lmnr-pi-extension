@@ -1,8 +1,7 @@
 import { LaminarAttributes } from "@lmnr-ai/lmnr";
-import { MAX_CHARS } from "./config.js";
-import { type ChatMessage, contentToBlocks, systemMessage } from "./messages.js";
+import { type ChatMessage, contentToBlocks } from "./messages.js";
 import type { Json, PiAssistantMessage, PiToolInfo, PiUsage } from "./types.js";
-import { jsonDumps, jsonDumpsTruncated, truncateText } from "./util.js";
+import { jsonDumps } from "./util.js";
 
 // ----------------- Attribute mapping (wayfinder ticket 5) -----------------
 // pi payloads → Laminar `lmnr.*` / OTel `gen_ai.*` attributes. Field-name
@@ -102,22 +101,11 @@ export function buildOutputMessage(message: PiAssistantMessage): ChatMessage {
 }
 
 /**
- * Serialize a turn's input messages for `gen_ai.input.messages`.
- *
- * The system prompt gets its own truncation budget. pi's runs about 12k chars —
- * over half of MAX_CHARS — and it is identical on every turn, so charging it to
- * the shared budget would clip the conversation, which is the part that differs
- * between turns and the part worth reading. Both the system message and the
- * conversation therefore get MAX_CHARS each.
+ * Serialize a turn's input messages for `gen_ai.input.messages`. Full payload,
+ * no truncation — matches the canonical Laminar instrumentations.
  */
-export function dumpInputMessages(messages: Json[], maxChars = MAX_CHARS): string {
-  const first = messages[0];
-  if (first?.role !== "system") {
-    return jsonDumpsTruncated(messages, maxChars);
-  }
-  const text = first.content?.[0]?.text;
-  const system = systemMessage(truncateText(String(text ?? ""), maxChars));
-  return jsonDumpsTruncated([system, ...messages.slice(1)], maxChars + jsonDumps(system).length);
+export function dumpInputMessages(messages: Json[]): string {
+  return jsonDumps(messages);
 }
 
 /**
@@ -155,7 +143,7 @@ export function buildLlmAttributes(message: PiAssistantMessage, inputMessages: J
   if (inputMessages) {
     attrs["gen_ai.input.messages"] = dumpInputMessages(inputMessages);
   }
-  attrs["gen_ai.output.messages"] = jsonDumpsTruncated([buildOutputMessage(message)]);
+  attrs["gen_ai.output.messages"] = jsonDumps([buildOutputMessage(message)]);
 
   Object.assign(attrs, mapUsageTokens(message.usage));
   Object.assign(attrs, mapUsageCost(message.usage));
