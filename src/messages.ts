@@ -40,9 +40,8 @@ function blockToContent(block: Json): Json | null {
     case "image":
       // Anthropic's image block requires the base64 payload, and pi keeps an
       // image in context for the rest of the run — carrying it would repeat
-      // hundreds of KB on every later turn and exhaust MAX_CHARS, whose
-      // mid-JSON clip would then cost us the whole message array. Report that an
-      // image was there, and its type, instead of re-embedding the bytes.
+      // hundreds of KB on every later turn. Report that an image was there, and
+      // its type, instead of re-embedding the bytes.
       return { type: "text", text: `[image${typeof block.mimeType === "string" ? ` ${block.mimeType}` : ""}]` };
     default:
       return null;

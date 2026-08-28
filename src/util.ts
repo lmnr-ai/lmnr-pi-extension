@@ -1,4 +1,3 @@
-import { MAX_CHARS } from "./config.js";
 import type { Json } from "./types.js";
 
 /** JSON.stringify with a fallback for non-serializable values. */
@@ -9,19 +8,6 @@ export function jsonDumps(value: Json): string {
     }
     return v;
   });
-}
-
-/** Truncate a string to MAX_CHARS, appending a marker when clipped. */
-export function truncateText(text: string, maxChars = MAX_CHARS): string {
-  if (text.length <= maxChars) {
-    return text;
-  }
-  return `${text.slice(0, maxChars)}… [truncated ${text.length - maxChars} chars]`;
-}
-
-/** JSON-serialize then truncate — used for span input/output values. */
-export function jsonDumpsTruncated(value: Json, maxChars = MAX_CHARS): string {
-  return truncateText(jsonDumps(value), maxChars);
 }
 
 /** Extract concatenated text from a pi content array (text blocks only). */

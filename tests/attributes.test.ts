@@ -91,29 +91,27 @@ test("buildToolDefinitions maps pi tools to the shape Laminar's tools column rea
   );
 });
 
-test("dumpInputMessages: a leading system message does not eat the conversation budget", () => {
-  // A system prompt far larger than the budget — the real pi case, where it runs
-  // ~12k against a 20k default. On a single shared budget it would swallow the
-  // whole payload and the conversation would never appear.
+test("dumpInputMessages: serializes every message verbatim, system prompt included", () => {
   const messages = [
     systemMessage("S".repeat(5000)),
     { role: "user", content: [{ type: "text", text: "list the files" }] },
     { role: "assistant", content: [{ type: "text", text: "here they are" }] },
   ];
-  const parsed = JSON.parse(dumpInputMessages(messages, 600));
+  const parsed = JSON.parse(dumpInputMessages(messages));
 
   assert.equal(parsed.length, 3, "system message plus both conversation turns survive");
   assert.equal(parsed[0].role, "system");
-  assert.equal(parsed[1].content[0].text, "list the files", "the conversation keeps its own budget");
-  assert.equal(parsed[2].content[0].text, "here they are", "the latest turn is not clipped");
+  assert.equal(parsed[0].content[0].text.length, 5000, "the system prompt is not clipped");
+  assert.equal(parsed[1].content[0].text, "list the files");
+  assert.equal(parsed[2].content[0].text, "here they are");
 });
 
-test("dumpInputMessages: the system prompt is itself capped, and no system message is a no-op", () => {
-  const long = JSON.parse(dumpInputMessages([systemMessage("S".repeat(5000))], 100));
-  assert.match(long[0].content[0].text, /^S{100}… \[truncated 4900 chars\]$/);
-
-  const conversation = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
-  assert.equal(dumpInputMessages(conversation, 600), JSON.stringify(conversation));
+test("dumpInputMessages: never truncates, even for very large payloads", () => {
+  const big = "X".repeat(50000); // far past the old 20k default
+  const conversation = [{ role: "user", content: [{ type: "text", text: big }] }];
+  const out = dumpInputMessages(conversation);
+  assert.equal(JSON.parse(out)[0].content[0].text, big, "large payloads are not clipped");
+  assert.ok(!out.includes("[truncated"), "no truncation marker");
 });
 
 test("buildLlmAttributes: cost uses the SDK's canonical gen_ai.usage.cost keys", () => {
