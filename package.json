@@ -1,6 +1,6 @@
 {
   "name": "@lmnr-ai/pi-extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Laminar observability extension for the pi coding agent — live in-process tracing via the Laminar SDK",
   "type": "module",
   "license": "Apache-2.0",
